@@ -1,7 +1,6 @@
 "use client";
 
-import { useUser, UserButton } from "@clerk/nextjs";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
 
 const CATEGORIES = [
   "Actor",
@@ -39,72 +38,65 @@ const CATEGORY_COLORS: Record<string, string> = {
   Other: "bg-[#525252]",
 };
 
+const STORAGE_KEY = "remember-her-entries";
+
+function loadEntries(): Entry[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveEntries(entries: Entry[]) {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(entries));
+}
+
 export default function Home() {
-  const { user, isLoaded } = useUser();
   const [entries, setEntries] = useState<Entry[]>([]);
   const [name, setName] = useState("");
   const [notes, setNotes] = useState("");
   const [category, setCategory] = useState<Category>("Actor");
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
   const [filter, setFilter] = useState<Category | "All">("All");
   const [search, setSearch] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
   const [editNotes, setEditNotes] = useState("");
   const [editCategory, setEditCategory] = useState<Category>("Actor");
-
-  const fetchEntries = useCallback(async () => {
-    try {
-      const res = await fetch("/api/entries");
-      if (res.ok) {
-        const data = await res.json();
-        setEntries(data);
-      }
-    } catch (err) {
-      console.error("Failed to fetch entries:", err);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
-    if (isLoaded && user) {
-      fetchEntries();
-    }
-  }, [isLoaded, user, fetchEntries]);
+    setEntries(loadEntries());
+    setMounted(true);
+  }, []);
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const persist = (updated: Entry[]) => {
+    setEntries(updated);
+    saveEntries(updated);
+  };
+
+  const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) return;
 
-    setSaving(true);
-    try {
-      const res = await fetch("/api/entries", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: name.trim(), notes: notes.trim(), category }),
-      });
-      if (res.ok) {
-        setName("");
-        setNotes("");
-        setCategory("Actor");
-        fetchEntries();
-      }
-    } catch (err) {
-      console.error("Failed to save entry:", err);
-    } finally {
-      setSaving(false);
-    }
+    const newEntry: Entry = {
+      id: crypto.randomUUID(),
+      name: name.trim(),
+      notes: notes.trim(),
+      category,
+      createdAt: new Date().toISOString(),
+    };
+
+    persist([newEntry, ...entries]);
+    setName("");
+    setNotes("");
+    setCategory("Actor");
   };
 
-  const handleDelete = async (id: string) => {
-    try {
-      await fetch(`/api/entries?id=${id}`, { method: "DELETE" });
-      setEntries((prev) => prev.filter((e) => e.id !== id));
-    } catch (err) {
-      console.error("Failed to delete entry:", err);
-    }
+  const handleDelete = (id: string) => {
+    persist(entries.filter((e) => e.id !== id));
   };
 
   const startEdit = (entry: Entry) => {
@@ -121,25 +113,15 @@ export default function Home() {
     setEditCategory("Actor");
   };
 
-  const handleUpdate = async (id: string) => {
-    try {
-      const res = await fetch("/api/entries", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          id,
-          name: editName.trim(),
-          notes: editNotes.trim(),
-          category: editCategory,
-        }),
-      });
-      if (res.ok) {
-        cancelEdit();
-        fetchEntries();
-      }
-    } catch (err) {
-      console.error("Failed to update entry:", err);
-    }
+  const handleUpdate = (id: string) => {
+    persist(
+      entries.map((e) =>
+        e.id === id
+          ? { ...e, name: editName.trim(), notes: editNotes.trim(), category: editCategory }
+          : e
+      )
+    );
+    cancelEdit();
   };
 
   const exportCSV = () => {
@@ -170,9 +152,9 @@ export default function Home() {
     return matchesFilter && matchesSearch;
   });
 
-  if (!isLoaded) {
+  if (!mounted) {
     return (
-      <div className="flex min-h-screen items-center justify-center">
+      <div className="flex min-h-screen items-center justify-center bg-[#0a0a0a]">
         <div className="h-8 w-8 animate-spin rounded-full border-2 border-[#e11d48] border-t-transparent" />
       </div>
     );
@@ -197,14 +179,6 @@ export default function Home() {
             >
               Export CSV
             </button>
-            <UserButton
-              afterSignOutUrl="/sign-in"
-              appearance={{
-                elements: {
-                  avatarBox: "w-8 h-8",
-                },
-              }}
-            />
           </div>
         </div>
       </header>
@@ -245,10 +219,10 @@ export default function Home() {
             />
             <button
               type="submit"
-              disabled={saving || !name.trim()}
+              disabled={!name.trim()}
               className="rounded-lg bg-[#e11d48] px-5 py-2.5 text-sm font-medium text-white transition-colors hover:bg-[#be123c] disabled:cursor-not-allowed disabled:opacity-40"
             >
-              {saving ? "..." : "Save"}
+              Save
             </button>
           </div>
         </form>
@@ -294,11 +268,7 @@ export default function Home() {
         </div>
 
         {/* Entries List */}
-        {loading ? (
-          <div className="flex justify-center py-20">
-            <div className="h-6 w-6 animate-spin rounded-full border-2 border-[#e11d48] border-t-transparent" />
-          </div>
-        ) : filteredEntries.length === 0 ? (
+        {filteredEntries.length === 0 ? (
           <div className="py-20 text-center">
             <p className="text-lg text-[#555]">
               {entries.length === 0
@@ -314,7 +284,6 @@ export default function Home() {
                 className="group flex items-start gap-3 rounded-lg border border-[#2a2a2a] bg-[#141414] p-3 transition-colors hover:border-[#333]"
               >
                 {editingId === entry.id ? (
-                  /* Edit mode */
                   <div className="flex w-full flex-col gap-2">
                     <div className="flex gap-2">
                       <input
@@ -360,7 +329,6 @@ export default function Home() {
                     </div>
                   </div>
                 ) : (
-                  /* Display mode */
                   <>
                     <span
                       className={`mt-0.5 shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-white ${
